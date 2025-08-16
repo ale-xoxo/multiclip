@@ -68,6 +68,7 @@ var (
 	ctx, cancel = context.WithCancel(context.Background())
 	menuItems   = make([]*systray.MenuItem, 0, 5)
 	quitItem    *systray.MenuItem
+	cachedHistory []string // Cache to prevent unnecessary UI updates
 )
 
 func main() {
@@ -141,7 +142,7 @@ func monitorClipboard(ctx context.Context) {
 }
 
 func menuUpdateRoutine(ctx context.Context) {
-	ticker := time.NewTicker(3 * time.Second)
+	ticker := time.NewTicker(200 * time.Millisecond)
 	defer ticker.Stop()
 	
 	for {
@@ -187,7 +188,7 @@ func setupMenu() {
 		}
 	}
 
-	// Add separator and quit option (only once)
+	// Add separator and quit option at the end (only once)
 	if quitItem == nil {
 		systray.AddSeparator()
 		quitItem = systray.AddMenuItem("Quit MultiClip", "Exit the application")
@@ -217,11 +218,26 @@ func updateMenuItems() {
 
 	history := clipManager.GetHistory()
 	
-	// Remove old items (except quit)
+	// Check if history has changed to prevent unnecessary UI updates
+	if historyEquals(history, cachedHistory) {
+		return // No changes, skip UI update
+	}
+	
+	// Update cache
+	cachedHistory = make([]string, len(history))
+	copy(cachedHistory, history)
+	
+	// Remove old items AND reset quit button so it gets re-added at the end
 	for _, item := range menuItems {
 		item.Hide()
 	}
 	menuItems = menuItems[:0]
+	
+	// Hide and reset quit item so it gets recreated at the bottom
+	if quitItem != nil {
+		quitItem.Hide()
+		quitItem = nil
+	}
 
 	// Add current history
 	if len(history) == 0 {
@@ -241,6 +257,28 @@ func updateMenuItems() {
 			go handleMenuItemClick(item, menuItem)
 		}
 	}
+	
+	// Ensure separator and quit button are always at the end
+	if quitItem == nil {
+		systray.AddSeparator()
+		quitItem = systray.AddMenuItem("Quit MultiClip", "Exit the application")
+		
+		go func() {
+			for {
+				select {
+				case <-quitItem.ClickedCh:
+					log.Println("User requested quit")
+					cancel()
+					systray.Quit()
+					return
+				case <-ctx.Done():
+					return
+				}
+			}
+		}()
+	}
+	
+	log.Println("Menu updated with new clipboard items")
 }
 
 func handleMenuItemClick(text string, menuItem *systray.MenuItem) {
@@ -257,6 +295,19 @@ func handleMenuItemClick(text string, menuItem *systray.MenuItem) {
 	case <-ctx.Done():
 		return
 	}
+}
+
+// historyEquals compares two string slices for equality
+func historyEquals(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func onExit() {
